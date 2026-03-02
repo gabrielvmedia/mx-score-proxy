@@ -3,86 +3,154 @@ import express from "express";
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-const API_KEY = process.env.API_FOOTBALL_KEY;    // tu key
-const FIXTURE_ID = process.env.FIXTURE_ID;       // id del partido
-const BASE_URL = "https://v3.football.api-sports.io";
-const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 12000);
+// TheSportsDB (gratis) – key pública "1"
+const BASE_URL = "https://www.thesportsdb.com/api/v1/json/1";
+
+// Partido fijo por nombre + fecha
+const MATCH_DATE = process.env.MATCH_DATE; // YYYY-MM-DD
+const HOME_TEAM = process.env.HOME_TEAM;   // ej: Monterrey
+const AWAY_TEAM = process.env.AWAY_TEAM;   // ej: Cruz Azul
+const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 15000);
 
 let cache = { ts: 0, data: null };
 
-function mapStatus(short) {
-  const s = String(short || "").toUpperCase();
-  if (s === "HT") return "HT";
-  if (["FT","AET","PEN"].includes(s)) return "FT";
-  if (s === "NS") return "NS";
-  if (["1H","2H","ET"].includes(s)) return "LIVE";
-  return s || "—";
+function normStr(s) {
+  return String(s || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
 }
 
-async function fetchFixture() {
-  const url = `${BASE_URL}/fixtures?id=${encodeURIComponent(FIXTURE_ID)}&timezone=America/Mexico_City`;
-  const r = await fetch(url, { headers: { "x-apisports-key": API_KEY } });
-  if (!r.ok) throw new Error(`API HTTP ${r.status}`);
-  return r.json();
-}
-
-function normalize(payload) {
-  const item = payload?.response?.[0];
-  const home = item?.teams?.home || {};
-  const away = item?.teams?.away || {};
-  const events = Array.isArray(item?.events) ? item.events : [];
-
-  const goals = events
-    .filter(ev => String(ev?.type || "").toLowerCase() === "goal")
-    .map(ev => {
-      const m = ev?.time?.elapsed ?? null;
-      const player = ev?.player?.name || "Gol";
-      const detail = String(ev?.detail || "").toLowerCase();
-      const tag = detail.includes("penalty") ? " (P)" : detail.includes("own") ? " (AG)" : "";
-      let team = "home";
-      if (ev?.team?.id && away?.id && ev.team.id === away.id) team = "away";
-      return { minute: m, team, player: `${player}${tag}`.trim() };
-    })
-    .sort((a,b)=> (a.minute||0)-(b.minute||0));
-
+function makeFallback(status = "—") {
   return {
-    league: item?.league?.name || "Liga MX",
-    matchId: String(item?.fixture?.id ?? FIXTURE_ID),
-    status: mapStatus(item?.fixture?.status?.short),
-    minute: item?.fixture?.status?.elapsed ?? null,
-    home: {
-      name: home?.name || "LOCAL",
-      short: (home?.name || "LOCAL").slice(0,3).toUpperCase(),
-      score: Number(item?.goals?.home ?? 0),
-      logo: home?.logo || ""
-    },
-    away: {
-      name: away?.name || "VISITA",
-      short: (away?.name || "VISITA").slice(0,3).toUpperCase(),
-      score: Number(item?.goals?.away ?? 0),
-      logo: away?.logo || ""
-    },
-    goals,
+    league: "Liga MX",
+    matchId: `${MATCH_DATE || "date"}-${HOME_TEAM || "home"}-${AWAY_TEAM || "away"}`,
+    status,
+    minute: null,
+    home: { name: HOME_TEAM || "LOCAL", short: (HOME_TEAM || "LOC").slice(0,3).toUpperCase(), score: 0, logo: "" },
+    away: { name: AWAY_TEAM || "VISITA", short: (AWAY_TEAM || "VIS").slice(0,3).toUpperCase(), score: 0, logo: "" },
+    goals: [],
     updatedAt: new Date().toISOString()
   };
 }
 
-async function getData() {
+async function fetchEventsByDay(dateStr) {
+  const url = `${BASE_URL}/eventsday.php?d=${encodeURIComponent(dateStr)}&s=Soccer`;
+  const r = await fetch(url, { headers: { "Accept": "application/json" } });
+  if (!r.ok) throw new Error(`TheSportsDB HTTP ${r.status}`);
+  return r.json();
+}
+
+async function fetchEventDetails(eventId) {
+  const url = `${BASE_URL}/lookupevent.php?id=${encodeURIComponent(eventId)}`;
+  const r = await fetch(url, { headers: { "Accept": "application/json" } });
+  if (!r.ok) throw new Error(`TheSportsDB lookupevent HTTP ${r.status}`);
+  return r.json();
+}
+
+function parseGoalDetails(strDetails, teamSide) {
+  if (!strDetails) return [];
+  const raw = String(strDetails).replace(/\r/g, "\n");
+  const parts = raw.split(/\n|;/).map(x => x.trim()).filter(Boolean);
+
+  const goals = [];
+  for (const p of parts) {
+    const m = p.match(/(\d{1,3})(\+\d{1,2})?\s*'?/);
+    const minute = m ? Number(m[1]) : null;
+    const player = p.replace(/^\s*\d{1,3}(\+\d{1,2})?\s*'?:?\s*/,"").trim() || "Gol";
+    goals.push({ minute, team: teamSide, player });
+  }
+  return goals;
+}
+
+function guessStatus(e) {
+  const s = normStr(e?.strStatus);
+  if (!s) return "—";
+  if (s.includes("finished")) return "FT";
+  if (s.includes("not started")) return "NS";
+  if (s.includes("in progress") || s.includes("live")) return "LIVE";
+  return e?.strStatus || "—";
+}
+
+async function getCurrentMatch() {
   const now = Date.now();
   if (cache.data && (now - cache.ts) < CACHE_TTL_MS) return cache.data;
 
-  const raw = await fetchFixture();
-  const data = normalize(raw);
+  if (!MATCH_DATE || !HOME_TEAM || !AWAY_TEAM) {
+    const data = makeFallback("FALTAN VARIABLES");
+    cache = { ts: now, data };
+    return data;
+  }
+
+  const day = await fetchEventsByDay(MATCH_DATE);
+  const events = Array.isArray(day?.events) ? day.events : [];
+
+  const homeN = normStr(HOME_TEAM);
+  const awayN = normStr(AWAY_TEAM);
+
+  const found = events.find(ev => {
+    const h = normStr(ev?.strHomeTeam);
+    const a = normStr(ev?.strAwayTeam);
+    return h === homeN && a === awayN;
+  });
+
+  if (!found) {
+    const data = makeFallback("NO ENCONTRADO");
+    cache = { ts: now, data };
+    return data;
+  }
+
+  const eventId = found?.idEvent;
+  let details = null;
+  try {
+    const det = await fetchEventDetails(eventId);
+    details = det?.events?.[0] || null;
+  } catch {}
+
+  const homeScore = Number(found?.intHomeScore ?? 0);
+  const awayScore = Number(found?.intAwayScore ?? 0);
+
+  const league = found?.strLeague || "Liga MX";
+  const status = guessStatus(found);
+
+  const homeLogo = details?.strHomeTeamBadge || "";
+  const awayLogo = details?.strAwayTeamBadge || "";
+
+  const homeGoals = parseGoalDetails(details?.strHomeGoalDetails, "home");
+  const awayGoals = parseGoalDetails(details?.strAwayGoalDetails, "away");
+  const goals = [...homeGoals, ...awayGoals].sort((a,b)=> (a.minute||0)-(b.minute||0));
+
+  const data = {
+    league,
+    matchId: String(eventId || `${MATCH_DATE}-${HOME_TEAM}-${AWAY_TEAM}`),
+    status,
+    minute: null,
+    home: {
+      name: found?.strHomeTeam || HOME_TEAM,
+      short: (found?.strHomeTeam || HOME_TEAM).slice(0,3).toUpperCase(),
+      score: homeScore,
+      logo: homeLogo
+    },
+    away: {
+      name: found?.strAwayTeam || AWAY_TEAM,
+      short: (found?.strAwayTeam || AWAY_TEAM).slice(0,3).toUpperCase(),
+      score: awayScore,
+      logo: awayLogo
+    },
+    goals,
+    updatedAt: new Date().toISOString()
+  };
+
   cache = { ts: now, data };
   return data;
 }
 
-app.get("/health", (req,res)=> res.send("ok"));
+app.get("/health", (req, res) => res.status(200).send("ok"));
 
-app.get("/mx/match/current", async (req,res) => {
+app.get("/mx/match/current", async (req, res) => {
   try {
-    const data = await getData();
-    res.set("Cache-Control","no-store");
+    const data = await getCurrentMatch();
+    res.set("Cache-Control", "no-store");
     res.json(data);
   } catch (e) {
     if (cache.data) return res.json({ ...cache.data, stale: true });
@@ -90,4 +158,4 @@ app.get("/mx/match/current", async (req,res) => {
   }
 });
 
-app.listen(PORT, ()=> console.log("Running on", PORT));
+app.listen(PORT, () => console.log("Running on", PORT));
