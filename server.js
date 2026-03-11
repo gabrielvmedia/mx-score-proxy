@@ -7,18 +7,17 @@ const API_KEY = process.env.API_FOOTBALL_KEY;
 const BASE_URL = "https://v3.football.api-sports.io";
 const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 12000);
 
-// Alias de equipos para usar nombres fáciles en la URL
 const TEAM_ALIASES = {
   monterrey: 2282,
   rayados: 2282,
   "cruz-azul": 2295,
   cruzazul: 2295,
-  "club-america": 2289,
   america: 2289,
+  "club-america": 2289,
   tigres: 2283,
   pumas: 2291,
   chivas: 2286,
-  guadalajara: 2286,
+  guadalajara: 2286
 };
 
 const cache = new Map();
@@ -91,7 +90,6 @@ async function findCurrentOrNextMatchByTeam(teamId) {
   const cached = getCache(cacheKey);
   if (cached) return cached;
 
-  // 1) Buscar partidos en vivo del equipo
   const liveData = await apiFetch("/fixtures", {
     team: teamId,
     live: "all",
@@ -104,7 +102,6 @@ async function findCurrentOrNextMatchByTeam(teamId) {
     return match;
   }
 
-  // 2) Si no hay en vivo, buscar el siguiente partido del equipo
   const nextData = await apiFetch("/fixtures", {
     team: teamId,
     next: 1,
@@ -117,7 +114,6 @@ async function findCurrentOrNextMatchByTeam(teamId) {
     return match;
   }
 
-  // 3) Si no hay próximo, buscar el último partido
   const lastData = await apiFetch("/fixtures", {
     team: teamId,
     last: 1,
@@ -145,7 +141,6 @@ async function findCurrentOrNextMatchByTeam(teamId) {
 function resolveTeamId(teamParam) {
   if (!teamParam) return null;
 
-  // si mandan número directamente
   if (/^\d+$/.test(teamParam)) {
     return Number(teamParam);
   }
@@ -158,15 +153,13 @@ app.get("/health", (req, res) => {
   res.send("ok");
 });
 
-// Ruta antigua por FIXTURE_ID fijo, por si quieres conservarla más adelante
 app.get("/mx/match/current", async (req, res) => {
-  res.status(400).json({
+  return res.status(400).json({
     error: "deprecated_route",
     message: "Usa /mx/match/team/:team en lugar de /mx/match/current"
   });
 });
 
-// Nueva ruta dinámica por equipo
 app.get("/mx/match/team/:team", async (req, res) => {
   try {
     const teamId = resolveTeamId(req.params.team);
@@ -181,7 +174,6 @@ app.get("/mx/match/team/:team", async (req, res) => {
     const data = await findCurrentOrNextMatchByTeam(teamId);
     res.set("Cache-Control", "no-store");
     res.json(data);
-
   } catch (error) {
     res.status(500).json({
       error: "upstream_unavailable",
@@ -193,4 +185,4 @@ app.get("/mx/match/team/:team", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-add team based match endpoint
+fix team endpoint syntax
