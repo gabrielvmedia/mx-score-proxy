@@ -185,4 +185,3 @@ app.get("/mx/match/team/:team", async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-fix team endpoint syntax
