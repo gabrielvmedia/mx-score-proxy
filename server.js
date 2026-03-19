@@ -1,187 +1,128 @@
-import express from "express";
-
+const express = require("express");
+const axios = require("axios");
 const app = express();
-const PORT = process.env.PORT || 8080;
+
+const PORT = process.env.PORT || 3000;
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
-const BASE_URL = "https://v3.football.api-sports.io";
-const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 12000);
+const API_HOST = "v3.football.api-sports.io";
+const TEAM_SEARCH = process.env.TEAM_SEARCH || "Tigres";
+const TIMEZONE = process.env.TIMEZONE || "America/Monterrey";
 
-const TEAM_ALIASES = {
-  monterrey: 2282,
-  rayados: 2282,
-  "cruz-azul": 2295,
-  cruzazul: 2295,
-  america: 2289,
-  "club-america": 2289,
-  tigres: 2283,
-  pumas: 2291,
-  chivas: 2286,
-  guadalajara: 2286
-};
-
-const cache = new Map();
-
-function getCache(key) {
-  const item = cache.get(key);
-  if (!item) return null;
-  if (Date.now() - item.ts > CACHE_TTL_MS) {
-    cache.delete(key);
-    return null;
-  }
-  return item.data;
-}
-
-function setCache(key, data) {
-  cache.set(key, { ts: Date.now(), data });
-}
-
-function mapStatus(short) {
-  const s = String(short || "").toUpperCase();
-  if (s === "HT") return "HT";
-  if (["FT", "AET", "PEN"].includes(s)) return "FT";
-  if (s === "NS") return "NS";
-  if (["1H", "2H", "ET", "BT", "P"].includes(s)) return "LIVE";
-  return s || "—";
-}
-
-async function apiFetch(path, params = {}) {
-  const qs = new URLSearchParams(params).toString();
-  const url = `${BASE_URL}${path}?${qs}`;
-
-  const res = await fetch(url, {
-    headers: {
-      "x-apisports-key": API_KEY
-    }
-  });
-
-  if (!res.ok) {
-    throw new Error(`API error ${res.status}`);
-  }
-
-  return res.json();
-}
-
-function normalizeMatch(match) {
-  return {
-    league: match?.league?.name || "",
-    matchId: match?.fixture?.id || null,
-    status: mapStatus(match?.fixture?.status?.short),
-    minute: match?.fixture?.status?.elapsed ?? null,
-    date: match?.fixture?.date || null,
-    home: {
-      name: match?.teams?.home?.name || "",
-      short: (match?.teams?.home?.name || "").slice(0, 3).toUpperCase(),
-      score: match?.goals?.home ?? 0,
-      logo: match?.teams?.home?.logo || ""
-    },
-    away: {
-      name: match?.teams?.away?.name || "",
-      short: (match?.teams?.away?.name || "").slice(0, 3).toUpperCase(),
-      score: match?.goals?.away ?? 0,
-      logo: match?.teams?.away?.logo || ""
-    },
-    updatedAt: new Date().toISOString()
-  };
-}
-
-async function findCurrentOrNextMatchByTeam(teamId) {
-  const cacheKey = `team-${teamId}`;
-  const cached = getCache(cacheKey);
-  if (cached) return cached;
-
-  const liveData = await apiFetch("/fixtures", {
-    team: teamId,
-    live: "all",
-    timezone: "America/Mexico_City"
-  });
-
-  if (liveData.response && liveData.response.length > 0) {
-    const match = normalizeMatch(liveData.response[0]);
-    setCache(cacheKey, match);
-    return match;
-  }
-
-  const nextData = await apiFetch("/fixtures", {
-    team: teamId,
-    next: 1,
-    timezone: "America/Mexico_City"
-  });
-
-  if (nextData.response && nextData.response.length > 0) {
-    const match = normalizeMatch(nextData.response[0]);
-    setCache(cacheKey, match);
-    return match;
-  }
-
-  const lastData = await apiFetch("/fixtures", {
-    team: teamId,
-    last: 1,
-    timezone: "America/Mexico_City"
-  });
-
-  if (lastData.response && lastData.response.length > 0) {
-    const match = normalizeMatch(lastData.response[0]);
-    setCache(cacheKey, match);
-    return match;
-  }
-
-  return {
-    league: "",
-    matchId: null,
-    status: "NO MATCH",
-    minute: null,
-    date: null,
-    home: { name: "", short: "", score: 0, logo: "" },
-    away: { name: "", short: "", score: 0, logo: "" },
-    updatedAt: new Date().toISOString()
-  };
-}
-
-function resolveTeamId(teamParam) {
-  if (!teamParam) return null;
-
-  if (/^\d+$/.test(teamParam)) {
-    return Number(teamParam);
-  }
-
-  const normalized = String(teamParam).toLowerCase().trim();
-  return TEAM_ALIASES[normalized] || null;
-}
-
-app.get("/health", (req, res) => {
-  res.send("ok");
+const api = axios.create({
+  baseURL: `https://${API_HOST}`,
+  headers: {
+    "x-apisports-key": API_KEY,
+  },
+  timeout: 15000,
 });
 
-app.get("/mx/match/current", async (req, res) => {
-  return res.status(400).json({
-    error: "deprecated_route",
-    message: "Usa /mx/match/team/:team en lugar de /mx/match/current"
-  });
-});
+let TIGRES_TEAM_ID = null;
 
-app.get("/mx/match/team/:team", async (req, res) => {
+// 🔎 Obtener ID de Tigres automáticamente
+async function getTeamId() {
+  if (TIGRES_TEAM_ID) return TIGRES_TEAM_ID;
+
+  const res = await api.get("/teams", {
+    params: { search: TEAM_SEARCH },
+  });
+
+  const team = res.data.response[0];
+  TIGRES_TEAM_ID = team.team.id;
+
+  console.log("✅ Team ID encontrado:", TIGRES_TEAM_ID);
+
+  return TIGRES_TEAM_ID;
+}
+
+// 🟢 Endpoint principal (live o siguiente)
+app.get("/api/tigres/live-or-next", async (req, res) => {
   try {
-    const teamId = resolveTeamId(req.params.team);
+    const teamId = await getTeamId();
 
-    if (!teamId) {
-      return res.status(400).json({
-        error: "invalid_team",
-        message: "Equipo no reconocido. Usa un ID o alias válido."
+    // 1. Buscar partidos en vivo
+    const liveResp = await api.get("/fixtures", {
+      params: { live: "all" },
+    });
+
+    const liveMatches = (liveResp.data.response || []).filter(
+      (m) =>
+        m.teams.home.id === teamId || m.teams.away.id === teamId
+    );
+
+    // ✅ SI HAY PARTIDO EN VIVO
+    if (liveMatches.length > 0) {
+      const match = liveMatches[0];
+
+      // eventos
+      const eventsResp = await api.get("/fixtures/events", {
+        params: { fixture: match.fixture.id },
+      });
+
+      return res.json({
+        mode: "live",
+        match: formatMatch(match),
+        events: eventsResp.data.response || [],
       });
     }
 
-    const data = await findCurrentOrNextMatchByTeam(teamId);
-    res.set("Cache-Control", "no-store");
-    res.json(data);
-  } catch (error) {
+    // 🔵 SI NO HAY EN VIVO → siguiente partido
+    const nextResp = await api.get("/fixtures", {
+      params: {
+        team: teamId,
+        next: 1,
+        timezone: TIMEZONE,
+      },
+    });
+
+    const match = nextResp.data.response[0];
+
+    return res.json({
+      mode: "next",
+      match: formatMatch(match),
+      events: [],
+    });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+
     res.status(500).json({
-      error: "upstream_unavailable",
-      message: error.message
+      error: err.response?.data || err.message,
     });
   }
 });
 
+// 🎯 Formatear datos para la pantalla
+function formatMatch(match) {
+  return {
+    id: match.fixture.id,
+    date: match.fixture.date,
+    status: match.fixture.status.short,
+    elapsed: match.fixture.status.elapsed,
+
+    league: match.league.name,
+    round: match.league.round,
+
+    home: {
+      name: match.teams.home.name,
+      logo: match.teams.home.logo,
+      goals: match.goals.home,
+    },
+
+    away: {
+      name: match.teams.away.name,
+      logo: match.teams.away.logo,
+      goals: match.goals.away,
+    },
+
+    venue: match.fixture.venue.name,
+  };
+}
+
+// 🧪 Test simple
+app.get("/", (req, res) => {
+  res.send("API Tigres funcionando");
+});
+
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log("🚀 Server corriendo en puerto", PORT);
 });
