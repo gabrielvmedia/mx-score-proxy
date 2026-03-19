@@ -1,7 +1,7 @@
-const express = require("express");
-const axios = require("axios");
-const app = express();
+import express from "express";
+import axios from "axios";
 
+const app = express();
 const PORT = process.env.PORT || 3000;
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
@@ -19,7 +19,6 @@ const api = axios.create({
 
 let TIGRES_TEAM_ID = null;
 
-// 🔎 Obtener ID de Tigres automáticamente
 async function getTeamId() {
   if (TIGRES_TEAM_ID) return TIGRES_TEAM_ID;
 
@@ -27,34 +26,59 @@ async function getTeamId() {
     params: { search: TEAM_SEARCH },
   });
 
+  if (!res.data.response || !res.data.response.length) {
+    throw new Error(`No se encontró el equipo: ${TEAM_SEARCH}`);
+  }
+
   const team = res.data.response[0];
   TIGRES_TEAM_ID = team.team.id;
 
-  console.log("✅ Team ID encontrado:", TIGRES_TEAM_ID);
+  console.log("Team ID encontrado:", TIGRES_TEAM_ID);
 
   return TIGRES_TEAM_ID;
 }
 
-// 🟢 Endpoint principal (live o siguiente)
+function formatMatch(match) {
+  return {
+    id: match.fixture?.id,
+    date: match.fixture?.date,
+    status: match.fixture?.status?.short,
+    elapsed: match.fixture?.status?.elapsed,
+    league: match.league?.name,
+    round: match.league?.round,
+    home: {
+      name: match.teams?.home?.name,
+      logo: match.teams?.home?.logo,
+      goals: match.goals?.home,
+    },
+    away: {
+      name: match.teams?.away?.name,
+      logo: match.teams?.away?.logo,
+      goals: match.goals?.away,
+    },
+    venue: match.fixture?.venue?.name,
+  };
+}
+
+app.get("/", (req, res) => {
+  res.send("API Tigres funcionando");
+});
+
 app.get("/api/tigres/live-or-next", async (req, res) => {
   try {
     const teamId = await getTeamId();
 
-    // 1. Buscar partidos en vivo
     const liveResp = await api.get("/fixtures", {
       params: { live: "all" },
     });
 
     const liveMatches = (liveResp.data.response || []).filter(
-      (m) =>
-        m.teams.home.id === teamId || m.teams.away.id === teamId
+      (m) => m.teams?.home?.id === teamId || m.teams?.away?.id === teamId
     );
 
-    // ✅ SI HAY PARTIDO EN VIVO
     if (liveMatches.length > 0) {
       const match = liveMatches[0];
 
-      // eventos
       const eventsResp = await api.get("/fixtures/events", {
         params: { fixture: match.fixture.id },
       });
@@ -66,7 +90,6 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
       });
     }
 
-    // 🔵 SI NO HAY EN VIVO → siguiente partido
     const nextResp = await api.get("/fixtures", {
       params: {
         team: teamId,
@@ -75,54 +98,29 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
       },
     });
 
-    const match = nextResp.data.response[0];
+    const nextMatch = nextResp.data.response?.[0];
+
+    if (!nextMatch) {
+      return res.json({
+        mode: "none",
+        match: null,
+        events: [],
+      });
+    }
 
     return res.json({
       mode: "next",
-      match: formatMatch(match),
+      match: formatMatch(nextMatch),
       events: [],
     });
   } catch (err) {
     console.error(err.response?.data || err.message);
-
     res.status(500).json({
       error: err.response?.data || err.message,
     });
   }
 });
 
-// 🎯 Formatear datos para la pantalla
-function formatMatch(match) {
-  return {
-    id: match.fixture.id,
-    date: match.fixture.date,
-    status: match.fixture.status.short,
-    elapsed: match.fixture.status.elapsed,
-
-    league: match.league.name,
-    round: match.league.round,
-
-    home: {
-      name: match.teams.home.name,
-      logo: match.teams.home.logo,
-      goals: match.goals.home,
-    },
-
-    away: {
-      name: match.teams.away.name,
-      logo: match.teams.away.logo,
-      goals: match.goals.away,
-    },
-
-    venue: match.fixture.venue.name,
-  };
-}
-
-// 🧪 Test simple
-app.get("/", (req, res) => {
-  res.send("API Tigres funcionando");
-});
-
 app.listen(PORT, () => {
-  console.log("🚀 Server corriendo en puerto", PORT);
+  console.log(`Servidor corriendo en puerto ${PORT}`);
 });
