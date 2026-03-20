@@ -6,7 +6,7 @@ const PORT = process.env.PORT || 3000;
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_HOST = "v3.football.api-sports.io";
-const TEAM_SEARCH = process.env.TEAM_SEARCH || "Tigres UANL";
+const TEAM_SEARCH = process.env.TEAM_SEARCH || "Tigres";
 const TEAM_ID_ENV = process.env.TEAM_ID;
 const TIMEZONE = process.env.TIMEZONE || "America/Monterrey";
 
@@ -31,15 +31,9 @@ async function getTeamId() {
     throw new Error(`No se encontró el equipo: ${TEAM_SEARCH}`);
   }
 
-  const exact =
-    res.data.response.find(
-      (item) =>
-        item.team?.name?.toLowerCase() === "tigres uanl" ||
-        item.team?.code?.toLowerCase() === "tig"
-    ) || res.data.response[0];
-
-  TEAM_ID = exact.team.id;
-  console.log("Team ID encontrado:", TEAM_ID, exact.team.name);
+  const first = res.data.response[0];
+  TEAM_ID = first.team.id;
+  console.log("Team ID encontrado:", TEAM_ID, first.team.name);
 
   return TEAM_ID;
 }
@@ -68,6 +62,35 @@ function formatMatch(match) {
 
 app.get("/", (req, res) => {
   res.send("API Tigres funcionando");
+});
+
+app.get("/api/debug/teams", async (req, res) => {
+  try {
+    const search = req.query.search || TEAM_SEARCH;
+
+    const response = await api.get("/teams", {
+      params: { search },
+    });
+
+    const teams = (response.data.response || []).map((item) => ({
+      id: item.team?.id,
+      name: item.team?.name,
+      code: item.team?.code,
+      country: item.team?.country,
+      founded: item.team?.founded,
+      logo: item.team?.logo,
+    }));
+
+    res.json({
+      search,
+      total: teams.length,
+      teams,
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: err.response?.data || err.message,
+    });
+  }
 });
 
 app.get("/api/tigres/live-or-next", async (req, res) => {
