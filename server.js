@@ -6,8 +6,8 @@ const PORT = process.env.PORT || 3000;
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_HOST = "v3.football.api-sports.io";
-const TEAM_SEARCH = process.env.TEAM_SEARCH || "Tigres";
-const TEAM_ID_ENV = process.env.TEAM_ID;
+const TEAM_SEARCH = process.env.TEAM_SEARCH || "Tigres UANL";
+const TEAM_ID = Number(process.env.TEAM_ID || 2279);
 const TIMEZONE = process.env.TIMEZONE || "America/Monterrey";
 
 const api = axios.create({
@@ -18,26 +18,6 @@ const api = axios.create({
   timeout: 15000,
 });
 
-let TEAM_ID = TEAM_ID_ENV ? Number(TEAM_ID_ENV) : null;
-
-async function getTeamId() {
-  if (TEAM_ID) return TEAM_ID;
-
-  const res = await api.get("/teams", {
-    params: { search: TEAM_SEARCH },
-  });
-
-  if (!res.data.response || !res.data.response.length) {
-    throw new Error(`No se encontró el equipo: ${TEAM_SEARCH}`);
-  }
-
-  const first = res.data.response[0];
-  TEAM_ID = first.team.id;
-  console.log("Team ID encontrado:", TEAM_ID, first.team.name);
-
-  return TEAM_ID;
-}
-
 function formatMatch(match) {
   return {
     id: match.fixture?.id,
@@ -47,11 +27,13 @@ function formatMatch(match) {
     league: match.league?.name,
     round: match.league?.round,
     home: {
+      id: match.teams?.home?.id,
       name: match.teams?.home?.name,
       logo: match.teams?.home?.logo,
       goals: match.goals?.home,
     },
     away: {
+      id: match.teams?.away?.id,
       name: match.teams?.away?.name,
       logo: match.teams?.away?.logo,
       goals: match.goals?.away,
@@ -64,27 +46,21 @@ app.get("/", (req, res) => {
   res.send("API Tigres funcionando");
 });
 
-app.get("/api/debug/teams", async (req, res) => {
+app.get("/api/debug/team", async (req, res) => {
   try {
-    const search = req.query.search || TEAM_SEARCH;
-
     const response = await api.get("/teams", {
-      params: { search },
+      params: { search: TEAM_SEARCH },
     });
 
-    const teams = (response.data.response || []).map((item) => ({
-      id: item.team?.id,
-      name: item.team?.name,
-      code: item.team?.code,
-      country: item.team?.country,
-      founded: item.team?.founded,
-      logo: item.team?.logo,
-    }));
-
     res.json({
-      search,
-      total: teams.length,
-      teams,
+      configuredTeamId: TEAM_ID,
+      configuredTeamSearch: TEAM_SEARCH,
+      results: (response.data.response || []).map((item) => ({
+        id: item.team?.id,
+        name: item.team?.name,
+        country: item.team?.country,
+        code: item.team?.code,
+      })),
     });
   } catch (err) {
     res.status(500).json({
@@ -95,14 +71,12 @@ app.get("/api/debug/teams", async (req, res) => {
 
 app.get("/api/tigres/live-or-next", async (req, res) => {
   try {
-    const teamId = await getTeamId();
-
     const liveResp = await api.get("/fixtures", {
       params: { live: "all" },
     });
 
     const liveMatches = (liveResp.data.response || []).filter(
-      (m) => m.teams?.home?.id === teamId || m.teams?.away?.id === teamId
+      (m) => m.teams?.home?.id === TEAM_ID || m.teams?.away?.id === TEAM_ID
     );
 
     if (liveMatches.length > 0) {
@@ -114,7 +88,8 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
 
       return res.json({
         mode: "live",
-        teamId,
+        teamId: TEAM_ID,
+        teamSearch: TEAM_SEARCH,
         match: formatMatch(match),
         events: eventsResp.data.response || [],
       });
@@ -122,7 +97,7 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
 
     const nextResp = await api.get("/fixtures", {
       params: {
-        team: teamId,
+        team: TEAM_ID,
         next: 1,
         timezone: TIMEZONE,
       },
@@ -133,7 +108,8 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
     if (!nextMatch) {
       return res.json({
         mode: "none",
-        teamId,
+        teamId: TEAM_ID,
+        teamSearch: TEAM_SEARCH,
         match: null,
         events: [],
       });
@@ -141,7 +117,8 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
 
     return res.json({
       mode: "next",
-      teamId,
+      teamId: TEAM_ID,
+      teamSearch: TEAM_SEARCH,
       match: formatMatch(nextMatch),
       events: [],
     });
