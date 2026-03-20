@@ -6,7 +6,8 @@ const PORT = process.env.PORT || 3000;
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_HOST = "v3.football.api-sports.io";
-const TEAM_SEARCH = process.env.TEAM_SEARCH || "Tigres";
+const TEAM_SEARCH = process.env.TEAM_SEARCH || "Tigres UANL";
+const TEAM_ID_ENV = process.env.TEAM_ID;
 const TIMEZONE = process.env.TIMEZONE || "America/Monterrey";
 
 const api = axios.create({
@@ -17,10 +18,10 @@ const api = axios.create({
   timeout: 15000,
 });
 
-let TIGRES_TEAM_ID = null;
+let TEAM_ID = TEAM_ID_ENV ? Number(TEAM_ID_ENV) : null;
 
 async function getTeamId() {
-  if (TIGRES_TEAM_ID) return TIGRES_TEAM_ID;
+  if (TEAM_ID) return TEAM_ID;
 
   const res = await api.get("/teams", {
     params: { search: TEAM_SEARCH },
@@ -30,12 +31,17 @@ async function getTeamId() {
     throw new Error(`No se encontró el equipo: ${TEAM_SEARCH}`);
   }
 
-  const team = res.data.response[0];
-  TIGRES_TEAM_ID = team.team.id;
+  const exact =
+    res.data.response.find(
+      (item) =>
+        item.team?.name?.toLowerCase() === "tigres uanl" ||
+        item.team?.code?.toLowerCase() === "tig"
+    ) || res.data.response[0];
 
-  console.log("Team ID encontrado:", TIGRES_TEAM_ID);
+  TEAM_ID = exact.team.id;
+  console.log("Team ID encontrado:", TEAM_ID, exact.team.name);
 
-  return TIGRES_TEAM_ID;
+  return TEAM_ID;
 }
 
 function formatMatch(match) {
@@ -85,6 +91,7 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
 
       return res.json({
         mode: "live",
+        teamId,
         match: formatMatch(match),
         events: eventsResp.data.response || [],
       });
@@ -103,6 +110,7 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
     if (!nextMatch) {
       return res.json({
         mode: "none",
+        teamId,
         match: null,
         events: [],
       });
@@ -110,6 +118,7 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
 
     return res.json({
       mode: "next",
+      teamId,
       match: formatMatch(nextMatch),
       events: [],
     });
