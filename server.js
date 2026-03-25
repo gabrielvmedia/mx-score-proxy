@@ -10,7 +10,6 @@ const TEAM_SEARCH = process.env.TEAM_SEARCH || "Tigres UANL";
 const TEAM_ID = Number(process.env.TEAM_ID || 2279);
 const TIMEZONE = process.env.TIMEZONE || "America/Monterrey";
 
-// tiempos de cache
 const LIVE_CACHE_MS = Number(process.env.LIVE_CACHE_MS || 15000); // 15 seg
 const NEXT_CACHE_MS = Number(process.env.NEXT_CACHE_MS || 60000); // 60 seg
 
@@ -22,7 +21,6 @@ const api = axios.create({
   timeout: 15000,
 });
 
-// cache en memoria
 let liveCache = {
   data: null,
   expiresAt: 0,
@@ -67,7 +65,6 @@ app.get("/", (req, res) => {
 
 app.get("/api/tigres/live-or-next", async (req, res) => {
   try {
-    // 1) revisar si hay partido en vivo
     if (isCacheValid(liveCache)) {
       return res.json(liveCache.data);
     }
@@ -80,13 +77,8 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
       (m) => m.teams?.home?.id === TEAM_ID || m.teams?.away?.id === TEAM_ID
     );
 
-    // si hay partido en vivo
     if (liveMatches.length > 0) {
       const match = liveMatches[0];
-
-      const eventsResp = await api.get("/fixtures/events", {
-        params: { fixture: match.fixture.id },
-      });
 
       const payload = {
         mode: "live",
@@ -95,7 +87,6 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
         cached: true,
         cacheForMs: LIVE_CACHE_MS,
         match: formatMatch(match),
-        events: eventsResp.data.response || [],
       };
 
       liveCache = {
@@ -103,7 +94,6 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
         expiresAt: Date.now() + LIVE_CACHE_MS,
       };
 
-      // limpiar cache de próximo partido para evitar datos viejos
       nextCache = {
         data: null,
         expiresAt: 0,
@@ -112,7 +102,6 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
       return res.json(payload);
     }
 
-    // 2) si no hay vivo, revisar cache del próximo partido
     if (isCacheValid(nextCache)) {
       return res.json(nextCache.data);
     }
@@ -134,7 +123,6 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
       cached: true,
       cacheForMs: NEXT_CACHE_MS,
       match: nextMatch ? formatMatch(nextMatch) : null,
-      events: [],
     };
 
     nextCache = {
@@ -142,7 +130,6 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
       expiresAt: Date.now() + NEXT_CACHE_MS,
     };
 
-    // limpiar cache live porque ahorita no hay en vivo
     liveCache = {
       data: null,
       expiresAt: 0,
