@@ -10,6 +10,10 @@ const TEAM_SEARCH = process.env.TEAM_SEARCH || "Tigres UANL";
 const TEAM_ID = Number(process.env.TEAM_ID || 2279);
 const TIMEZONE = process.env.TIMEZONE || "America/Monterrey";
 
+// tiempos de cache
+const LIVE_CACHE_MS = Number(process.env.LIVE_CACHE_MS || 15000); // 15 seg
+const NEXT_CACHE_MS = Number(process.env.NEXT_CACHE_MS || 60000); // 60 seg
+
 const api = axios.create({
   baseURL: `https://${API_HOST}`,
   headers: {
@@ -17,6 +21,21 @@ const api = axios.create({
   },
   timeout: 15000,
 });
+
+// cache en memoria
+let liveCache = {
+  data: null,
+  expiresAt: 0,
+};
+
+let nextCache = {
+  data: null,
+  expiresAt: 0,
+};
+
+function isCacheValid(cache) {
+  return cache.data && Date.now() < cache.expiresAt;
+}
 
 function formatMatch(match) {
   return {
@@ -43,34 +62,16 @@ function formatMatch(match) {
 }
 
 app.get("/", (req, res) => {
-  res.send("API Tigres funcionando");
-});
-
-app.get("/api/debug/team", async (req, res) => {
-  try {
-    const response = await api.get("/teams", {
-      params: { search: TEAM_SEARCH },
-    });
-
-    res.json({
-      configuredTeamId: TEAM_ID,
-      configuredTeamSearch: TEAM_SEARCH,
-      results: (response.data.response || []).map((item) => ({
-        id: item.team?.id,
-        name: item.team?.name,
-        country: item.team?.country,
-        code: item.team?.code,
-      })),
-    });
-  } catch (err) {
-    res.status(500).json({
-      error: err.response?.data || err.message,
-    });
-  }
+  res.send("API Tigres funcionando con cache");
 });
 
 app.get("/api/tigres/live-or-next", async (req, res) => {
   try {
+    // 1) revisar si hay partido en vivo
+    if (isCacheValid(liveCache)) {
+      return res.json(liveCache.data);
+    }
+
     const liveResp = await api.get("/fixtures", {
       params: { live: "all" },
     });
@@ -79,6 +80,7 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
       (m) => m.teams?.home?.id === TEAM_ID || m.teams?.away?.id === TEAM_ID
     );
 
+    // si hay partido en vivo
     if (liveMatches.length > 0) {
       const match = liveMatches[0];
 
@@ -86,13 +88,33 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
         params: { fixture: match.fixture.id },
       });
 
-      return res.json({
+      const payload = {
         mode: "live",
         teamId: TEAM_ID,
         teamSearch: TEAM_SEARCH,
+        cached: true,
+        cacheForMs: LIVE_CACHE_MS,
         match: formatMatch(match),
         events: eventsResp.data.response || [],
-      });
+      };
+
+      liveCache = {
+        data: payload,
+        expiresAt: Date.now() + LIVE_CACHE_MS,
+      };
+
+      // limpiar cache de próximo partido para evitar datos viejos
+      nextCache = {
+        data: null,
+        expiresAt: 0,
+      };
+
+      return res.json(payload);
+    }
+
+    // 2) si no hay vivo, revisar cache del próximo partido
+    if (isCacheValid(nextCache)) {
+      return res.json(nextCache.data);
     }
 
     const nextResp = await api.get("/fixtures", {
@@ -105,25 +127,31 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
 
     const nextMatch = nextResp.data.response?.[0];
 
-    if (!nextMatch) {
-      return res.json({
-        mode: "none",
-        teamId: TEAM_ID,
-        teamSearch: TEAM_SEARCH,
-        match: null,
-        events: [],
-      });
-    }
-
-    return res.json({
-      mode: "next",
+    const payload = {
+      mode: nextMatch ? "next" : "none",
       teamId: TEAM_ID,
       teamSearch: TEAM_SEARCH,
-      match: formatMatch(nextMatch),
+      cached: true,
+      cacheForMs: NEXT_CACHE_MS,
+      match: nextMatch ? formatMatch(nextMatch) : null,
       events: [],
-    });
+    };
+
+    nextCache = {
+      data: payload,
+      expiresAt: Date.now() + NEXT_CACHE_MS,
+    };
+
+    // limpiar cache live porque ahorita no hay en vivo
+    liveCache = {
+      data: null,
+      expiresAt: 0,
+    };
+
+    return res.json(payload);
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    console.error("Error API:", err.response?.data || err.message);
+
     res.status(500).json({
       error: err.response?.data || err.message,
     });
@@ -132,4 +160,9 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
+  console.log(`TEAM_ID: ${TEAM_ID}`);
+  console.log(`TEAM_SEARCH: ${TEAM_SEARCH}`);
+  console.log(`TIMEZONE: ${TIMEZONE}`);
+  console.log(`LIVE_CACHE_MS: ${LIVE_CACHE_MS}`);
+  console.log(`NEXT_CACHE_MS: ${NEXT_CACHE_MS}`);
 });
