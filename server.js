@@ -6,12 +6,11 @@ const PORT = process.env.PORT || 3000;
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_HOST = "v3.football.api-sports.io";
-const TEAM_SEARCH = process.env.TEAM_SEARCH || "Tigres UANL";
-const TEAM_ID = Number(process.env.TEAM_ID || 2279);
-const TIMEZONE = process.env.TIMEZONE || "America/Monterrey";
+const TEAM_SEARCH = process.env.TEAM_SEARCH || "England";
+const TIMEZONE = process.env.TIMEZONE || "America/Mexico_City";
 
-const LIVE_CACHE_MS = Number(process.env.LIVE_CACHE_MS || 15000); // 15 seg
-const NEXT_CACHE_MS = Number(process.env.NEXT_CACHE_MS || 60000); // 60 seg
+const LIVE_CACHE_MS = Number(process.env.LIVE_CACHE_MS || 15000);
+const NEXT_CACHE_MS = Number(process.env.NEXT_CACHE_MS || 60000);
 
 const api = axios.create({
   baseURL: `https://${API_HOST}`,
@@ -20,6 +19,8 @@ const api = axios.create({
   },
   timeout: 15000,
 });
+
+let TEAM_ID = null;
 
 let liveCache = {
   data: null,
@@ -33,6 +34,26 @@ let nextCache = {
 
 function isCacheValid(cache) {
   return cache.data && Date.now() < cache.expiresAt;
+}
+
+async function getTeamId() {
+  if (TEAM_ID) return TEAM_ID;
+
+  const res = await api.get("/teams", {
+    params: { search: TEAM_SEARCH },
+  });
+
+  if (!res.data.response || !res.data.response.length) {
+    throw new Error(`No se encontró el equipo: ${TEAM_SEARCH}`);
+  }
+
+  const exact =
+    res.data.response.find(
+      (item) => item.team?.name?.toLowerCase() === TEAM_SEARCH.toLowerCase()
+    ) || res.data.response[0];
+
+  TEAM_ID = exact.team.id;
+  return TEAM_ID;
 }
 
 function formatMatch(match) {
@@ -60,11 +81,57 @@ function formatMatch(match) {
 }
 
 app.get("/", (req, res) => {
-  res.send("API Tigres funcionando con cache");
+  res.send("API funcionando");
+});
+
+app.get("/api/debug/team", async (req, res) => {
+  try {
+    const response = await api.get("/teams", {
+      params: { search: TEAM_SEARCH },
+    });
+
+    res.json({
+      configuredTeamSearch: TEAM_SEARCH,
+      results: (response.data.response || []).map((item) => ({
+        id: item.team?.id,
+        name: item.team?.name,
+        country: item.team?.country,
+        code: item.team?.code,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: err.response?.data || err.message,
+    });
+  }
+});
+
+app.get("/api/logo", async (req, res) => {
+  try {
+    const { url } = req.query;
+
+    if (!url) {
+      return res.status(400).send("Falta url");
+    }
+
+    const response = await axios.get(url, {
+      responseType: "arraybuffer",
+      timeout: 15000,
+    });
+
+    const contentType = response.headers["content-type"] || "image/png";
+    res.setHeader("Content-Type", contentType);
+    res.send(response.data);
+  } catch (err) {
+    console.error("Error cargando logo:", err.message);
+    res.status(500).send("No se pudo cargar el logo");
+  }
 });
 
 app.get("/api/tigres/live-or-next", async (req, res) => {
   try {
+    const teamId = await getTeamId();
+
     if (isCacheValid(liveCache)) {
       return res.json(liveCache.data);
     }
@@ -74,19 +141,14 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
     });
 
     const liveMatches = (liveResp.data.response || []).filter(
-      (m) => m.teams?.home?.id === TEAM_ID || m.teams?.away?.id === TEAM_ID
+      (m) => m.teams?.home?.id === teamId || m.teams?.away?.id === teamId
     );
 
     if (liveMatches.length > 0) {
-      const match = liveMatches[0];
-
       const payload = {
         mode: "live",
-        teamId: TEAM_ID,
         teamSearch: TEAM_SEARCH,
-        cached: true,
-        cacheForMs: LIVE_CACHE_MS,
-        match: formatMatch(match),
+        match: formatMatch(liveMatches[0]),
       };
 
       liveCache = {
@@ -108,7 +170,7 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
 
     const nextResp = await api.get("/fixtures", {
       params: {
-        team: TEAM_ID,
+        team: teamId,
         next: 1,
         timezone: TIMEZONE,
       },
@@ -118,10 +180,7 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
 
     const payload = {
       mode: nextMatch ? "next" : "none",
-      teamId: TEAM_ID,
       teamSearch: TEAM_SEARCH,
-      cached: true,
-      cacheForMs: NEXT_CACHE_MS,
       match: nextMatch ? formatMatch(nextMatch) : null,
     };
 
@@ -138,7 +197,6 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
     return res.json(payload);
   } catch (err) {
     console.error("Error API:", err.response?.data || err.message);
-
     res.status(500).json({
       error: err.response?.data || err.message,
     });
@@ -147,9 +205,5 @@ app.get("/api/tigres/live-or-next", async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
-  console.log(`TEAM_ID: ${TEAM_ID}`);
   console.log(`TEAM_SEARCH: ${TEAM_SEARCH}`);
-  console.log(`TIMEZONE: ${TIMEZONE}`);
-  console.log(`LIVE_CACHE_MS: ${LIVE_CACHE_MS}`);
-  console.log(`NEXT_CACHE_MS: ${NEXT_CACHE_MS}`);
 });
